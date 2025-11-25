@@ -1,0 +1,15 @@
+[package]
+name = "rshttpserver-backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+tokio = { version = "1", features = ["full"] }
+tokio-util = {version = "0.7.17", features = ["codec"]}
+tower = "0"
+tower-http = { version = "0", features = ["compression-full", "decompression-full", "trace","fs"] }
+tracing = "0"
+tracing-subscriber = { version = "0", features = ["env-filter"] }
