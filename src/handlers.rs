@@ -3,8 +3,8 @@ use crate::utils::format_bytes;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Multipart, Path, State};
-use axum::http::{HeaderMap, header, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{Html, IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::SeekFrom;
@@ -12,6 +12,9 @@ use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
+use askama::Template;
+
+// bring trait in scope
 
 #[derive(Serialize)]
 pub(crate) struct ApiResponse {
@@ -25,10 +28,50 @@ pub(crate) struct EntryInfo {
     ename: String,
     eppath: String,
     epath: String,
+    esize: u64,
     etype: String,
     emodified: u64,
     eaccessed: u64,
     ecreated: u64,
+}
+
+
+
+#[derive(Template)] // this will generate the code...
+#[template(path = "index.html")] // using the template in this path, relative
+struct RootTemplate { // the name of the struct can be anything
+}
+pub(crate) async fn root_handler() -> impl IntoResponse {
+    Html(RootTemplate{}.render().unwrap())
+}
+
+
+use rust_embed::Embed;
+#[derive(Embed)]
+#[folder = "dist/"]       // 嵌入整个 static 文件夹
+#[include = "**/*"]         // 包含所有文件
+#[exclude = "*.DS_Store"]  // 可选排除
+struct Assets;
+
+
+// 静态资源服务：/assets/... => static/...
+pub(crate) async fn static_handler(
+    Path(path):Path<String>,
+) -> Result<impl IntoResponse ,(StatusCode, Vec<u8>)>{
+    let path = path.trim_start_matches('/');
+    match Assets::get(path) {
+        Some(file) => {
+            let mut headers = HeaderMap::new();
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            headers.insert("content-type", mime.to_string().parse().unwrap());
+
+            // 可选：缓存一年（生产环境推荐）
+            headers.insert("cache-control", "public, max-age=31536000, immutable".parse().unwrap());
+
+           Ok((headers, file.data.to_vec()))
+        }
+        None => Err((StatusCode::NOT_FOUND, Vec::new())),
+    }
 }
 
 pub(crate) async fn list_entry_info_handler(
@@ -112,6 +155,10 @@ pub(crate) async fn list_entry_info_handler(
                 })
             })
             .unwrap_or_else(|_| 0);
+        let esize = a_entry_path
+            .metadata()
+            .and_then(|m| Ok(m.len()))
+            .unwrap_or_else(|_| 0);
         return (
             StatusCode::OK,
             Json(ApiResponse {
@@ -121,6 +168,7 @@ pub(crate) async fn list_entry_info_handler(
                     ename,
                     eppath,
                     epath,
+                    esize,
                     etype,
                     emodified,
                     eaccessed,
@@ -193,11 +241,16 @@ pub(crate) async fn list_entry_info_handler(
                                 })
                             })
                             .unwrap_or_else(|_| 0);
+                        let esize = entry
+                            .metadata()
+                            .and_then(|m| Ok(m.len()))
+                            .unwrap_or_else(|_| 0);
 
                         entries_info.push(EntryInfo {
                             ename,
                             eppath,
                             epath,
+                            esize,
                             etype,
                             emodified,
                             eaccessed,
@@ -434,7 +487,7 @@ pub(crate) async fn download_entry_handler(
     Path(entrypath): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Response,(StatusCode, Json<ApiResponse>)> {
+) -> Result<Response, (StatusCode, Json<ApiResponse>)> {
     let a_entry_path = match state.config.root_dirpath.join(&entrypath).canonicalize() {
         Ok(p) => p,
         Err(_) => {
@@ -444,8 +497,8 @@ pub(crate) async fn download_entry_handler(
                     code: 404,
                     message: format!("{} not found", &entrypath),
                     data: None,
-                })),
-            );
+                }),
+            ));
         }
     };
 
@@ -538,7 +591,12 @@ pub(crate) async fn download_entry_handler(
         );
 
         if is_partial {
-            response_headers.insert(header::CONTENT_RANGE, format!("bytes {}-{}/{}", start, end, esize).parse().unwrap());
+            response_headers.insert(
+                header::CONTENT_RANGE,
+                format!("bytes {}-{}/{}", start, end, esize)
+                    .parse()
+                    .unwrap(),
+            );
             Ok((StatusCode::PARTIAL_CONTENT, response_headers, body).into_response())
         } else {
             Ok((StatusCode::OK, response_headers, body).into_response())
@@ -546,12 +604,13 @@ pub(crate) async fn download_entry_handler(
     } else {
         todo!()
     }
-
-}// 解析 Range 的辅助函数 (保持简单有效)
+} // 解析 Range 的辅助函数 (保持简单有效)
 fn parse_range(range: &str, size: u64) -> Option<(u64, u64)> {
     let range = range.strip_prefix("bytes=")?;
     let parts: Vec<&str> = range.split('-').collect();
-    if parts.len() != 2 { return None; }
+    if parts.len() != 2 {
+        return None;
+    }
 
     let start = parts[0].parse::<u64>().ok()?;
     let end = if parts[1].is_empty() {
@@ -560,8 +619,8 @@ fn parse_range(range: &str, size: u64) -> Option<(u64, u64)> {
         parts[1].parse::<u64>().ok()?.min(size - 1)
     };
 
-    if start > end { return None; }
+    if start > end {
+        return None;
+    }
     Some((start, end))
 }
-
-

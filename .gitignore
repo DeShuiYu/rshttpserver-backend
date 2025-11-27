@@ -3,3 +3,4 @@
 .DS_Store
 .crates2.json
 .crates.toml
+/bin
